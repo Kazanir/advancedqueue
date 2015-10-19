@@ -121,6 +121,35 @@ function advancedqueue_get_queues_info($queue_names = array()) {
 }
 
 /**
+ * Light wrapper to process an item whose details are passed via POST to our
+ * FastCGI script.
+ */
+function advancedqueue_fastcgi_process_item() {
+  $queues_info = advancedqueue_get_queues_info();
+  $queue_name = $_POST['queue_name'];
+  if (empty($queues_info[$queue_name])) {
+    drupal_add_http_header('Status', '404 Not Found');
+    print t("Could not validate the requested queue name.");
+  }
+  $queue_info = $queues_info[$queue_name];
+
+  $queue = DrupalQueue::get($queue_name);
+  if (!$queue) {
+    drupal_add_http_header('Status', '404 Not Found');
+    print t("Unable to load the requested queue.");
+  }
+
+  $item = $queue->retrieveItem($_POST['item_id']);
+  if (!$item) {
+    drupal_add_http_header('Status', '404 Not Found');
+    print t("Unable to process the requested queue item.");
+  }
+
+  $end = $_POST['end'];
+  advancedqueue_process_item($queue, $queue_name, $queue_info, $item, $end);
+}
+
+/**
  * Process a queue item.
  *
  * @param $queue

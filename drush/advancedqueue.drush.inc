@@ -1,5 +1,7 @@
 <?php
 
+use Adoy\FastCGI\Client as FCGIClient;
+
 /**
  * @file
  * Drush worker for Advanced-queue.
@@ -21,6 +23,20 @@ function advancedqueue_drush_command() {
     ),
     'aliases' => array('advancedqueue'),
   );
+  $items['advancedqueue-fastcgi-process-queue'] = array(
+    'arguments' => array(
+      'queue' => dt('The name of the queue to process.'),
+    ),
+    'options' => array(
+      'timeout' => 'The maximum execution time of the script. Be warned that this is a rough estimate as the time is only checked between two items.',
+      'all' => 'Process all queues.',
+      'host' => 'The host of the FastCGI server which will process each item.',
+      'port' => 'The port of the FastCGI server which will process each item.',
+      'socket' => 'The socket file of the FastCGI server which will process each item. (If set, takes precedence over host and port.)',
+    ),
+    'aliases' => array('advancedqueue-fcgi'),
+
+  );
   $items['advancedqueue-list'] = array(
     'description' => 'Returns a list of all defined queues',
     'options' => array(
@@ -37,6 +53,138 @@ function advancedqueue_drush_command() {
  *   Arbitrary string. The name of the queue to work with.
  */
 function drush_advancedqueue_process_queue($queue = NULL) {
+  $queues = advancedqueue_get_processing_queues($queue);
+  if ($queues === FALSE) {
+    return FALSE;
+  }
+
+  $timeout = drush_get_option('timeout');
+  $end = $timeout ? time() + $timeout : 0;
+
+  drush_log(dt('Starting processing loop.'));
+  while (!$end || time() < $end) {
+    foreach ($queues as $queue_name => $queue_info) {
+      $queue = DrupalQueue::get($queue_name);
+
+      if ($item = $queue->claimItem()) {
+        advancedqueue_process_item($queue, $queue_name, $queue_info, $item, $end);
+        continue 2;
+      }
+    }
+
+    // No item processed in that round, let the CPU rest.
+    sleep(1);
+  }
+
+  drush_log(dt('Timeout: exiting processing loop.'));
+}
+
+/**
+ * Command callback for drush advancedqueue-fastcgi-process-queue.
+ *
+ * @param $queue_name
+ *   Arbitrary string. The name of the queue to work with.
+ */
+function drush_advancedqueue_fastcgi_process_queue($queue = NULL) {
+  $queues = advancedqueue_get_processing_queues($queue);
+  if ($queues === FALSE) {
+    return FALSE;
+  }
+  // Validate our FastCGI server first.
+  $sock = drush_get_option('socket', variable_get('advancedqueue_fastcgi_socket', NULL));
+  if (!$sock) {
+    $host = drush_get_option('host', variable_get('advancedqueue_fastcgi_host', 'localhost'));
+    $port = drush_get_option('port', variable_get('advancedqueue_fastcgi_port', 9000));
+  }
+
+  $timeout = drush_get_option('timeout');
+  $end = $timeout ? time() + $timeout : 0;
+
+  drush_log(dt('Starting processing loop.'));
+
+  $client = new FCGIClient($sock ?: $host, $sock ? -1 : (string) $port);
+  $defaults = array(
+    'GATEWAY_INTERFACE' => 'FastCGI/1.0',
+    'REQUEST_METHOD' => 'POST',
+    'SCRIPT_FILENAME' => drupal_get_path('module', 'advancedqueue') . '/drush/item.php',
+    'SERVER_SOFTWARE' => 'drush/advancedqueue',
+    'REMOTE_ADDR' => '',
+    'REMOTE_PORT' => '',
+    'X_DRUPAL_ROOT' => DRUPAL_ROOT,
+    // @todo Other CGI attributes
+  );
+
+  // We keep a list of FastCGI request IDs mapped to their queue info and item
+  // here. We cleanup items opportunistically, when the number of open handles
+  // exceeds the maximum, and at the end of a run.
+  $processing = array();
+  $max = variable_get('advancedqueue_fastcgi_max_items', 10);
+
+  while (!$end || time() < $end) {
+    foreach ($queues as $queue_name => $queue_info) {
+      if (count($processing) >= $max) {
+        $oldest = key($processing);
+        $response = $client->wait_for_response($oldest);
+        // We record the response here and remove the handle ID from processing.
+        advancedqueue_handle_fastcgi_response($processing[$oldest], $response);
+        unset($processing[$oldest]);
+      }
+      $queue = DrupalQueue::get($queue_name);
+
+      if ($item = $queue->claimItem()) {
+        $params = $defaults;
+        // @todo Set specific FastCGI params here, like REQUEST_URI if
+        // necessary.
+        $content = "queue_name=$queue_name&item_id={$item->item_id}&end=$end";
+        $fastcgi_id = $client->async_request($params, $content);
+        $processing[$fastcgi_id] = array(
+          'queue' => $queue,
+          'queue_info' => $queue_info,
+          'queue_name' => $queue_name,
+          'item' => $item,
+          'end' => $end,
+        );
+        continue 2;
+      }
+    }
+
+    // No item processed in that round. Clean up an item opportunistically.
+    if ($processing) {
+      $oldest = key($processing);
+      $response = $client->wait_for_response($oldest);
+      // We record the response here and remove the handle ID from processing.
+      advancedqueue_handle_fastcgi_response($processing[$oldest], $response);
+      unset($processing[$oldest]);
+    }
+
+    // Let the CPU rest.
+    sleep(1);
+  }
+
+  // We need to make sure all async handles are cleaned up here.
+  foreach ($processing as $key => $info) {
+    $response = $client->wait_for_response($key);
+    advancedqueue_handle_fastcgi_response($info, $response);
+  }
+
+  drush_log(dt('Timeout: exiting processing loop.'));
+}
+
+/**
+ * Cleanup a FastCGI response where something unusual went wrong. This is mainly
+ * used to ensure that claimed items are released properly and that something is
+ * logged if FastCGI blew up before we got to processing the item.
+ */
+function advancedqueue_handle_fastcgi_response($info, $response) {
+  // @todo Parse this response to look for server 500s, 404s, and timeouts. Make
+  // sure to release the claim on the item and flag it as failed if this occurs.
+
+}
+
+/**
+ * Shared logic for assembling the list of queues to process.
+ */
+function advancedqueue_get_processing_queues($queue = NULL) {
   // Load information about the registered queues, and sort them by weight.
   if (!$queues_info = advancedqueue_get_queues_info()) {
     return drush_set_error(dt('No queues exist.'));
@@ -59,27 +207,7 @@ function drush_advancedqueue_process_queue($queue = NULL) {
     $queues = array_intersect_key($queues_info, $queues);
   }
 
-  // Run the worker for a certain period of time before killing it.
-  $timeout = drush_get_option('timeout');
-  $end = $timeout ? time() + $timeout : 0;
-
-  drush_log(dt('Starting processing loop.'));
-
-  while (!$end || time() < $end) {
-    foreach ($queues as $queue_name => $queue_info) {
-      $queue = DrupalQueue::get($queue_name);
-
-      if ($item = $queue->claimItem()) {
-        advancedqueue_process_item($queue, $queue_name, $queue_info, $item, $end);
-        continue 2;
-      }
-    }
-
-    // No item processed in that round, let the CPU rest.
-    sleep(1);
-  }
-
-  drush_log(dt('Timeout: exiting processing loop.'));
+  return $queues;
 }
 
 /**

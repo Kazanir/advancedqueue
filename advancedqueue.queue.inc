@@ -108,6 +108,18 @@ class AdvancedQueue implements DrupalReliableQueueInterface {
   }
 
   /**
+   * Non-interface method used by the FPM-driven implementation of an
+   * AdvancedQueue consumer. Used to retrieve a specific, pre-claimed item by
+   * its internal ID. Not intended for general use.
+   */
+  public function retrieveItem($id) {
+    $item = db_query('SELECT item_id, item_key, created, uid, title, data FROM {advancedqueue} q WHERE item_id = :id', array(':id' => $id))->fetchObject();
+    $item->data = unserialize($item->data);
+
+    return $item;
+  }
+
+  /**
    * Requeue an item in case of failure.
    */
   public function requeueItem($item) {

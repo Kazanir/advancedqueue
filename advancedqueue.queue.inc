@@ -34,7 +34,7 @@ class AdvancedQueue implements DrupalReliableQueueInterface {
    *   Whether the new item should replace the old item in the queue. Defaults
    *   to TRUE. Used for queue-but-don't-replace-existing logic.
    */
-  public function createUniqueItem($data, $key = NULL, $overwrite = TRUE) {
+  public function createUniqueItem($data, $key = NULL) {
     $fields = array(
       'name' => $this->name,
       'uid' => is_array($data) && isset($data['uid']) ? $data['uid'] : $GLOBALS['user']->uid,
@@ -48,17 +48,13 @@ class AdvancedQueue implements DrupalReliableQueueInterface {
       'status' => ADVANCEDQUEUE_STATUS_QUEUED,
     );
     if ($key) {
+      // Merge onto the existing item. This updates *all* properties, meaning
+      // that if "created" is set into the future and an item is updated too
+      // frequently, it might never get to run. Be careful!
       $fields['key'] = $key;
       $query = db_merge('advancedqueue')
-        ->key(array('key' => $key));
-      // If overwrite is set, merge the fields onto the current item.
-      if ($overwrite) {
-        $query->fields($fields);
-      }
-      else {
-      // Else only insert them -- a collision is ignored.
-        $query->insertFields($fields);
-      }
+        ->key(array('key' => $key))
+        ->fields($fields);
     }
     else {
       // No key means just insert a new item!

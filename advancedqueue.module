@@ -130,6 +130,7 @@ function advancedqueue_fastcgi_process_item() {
   if (empty($queues_info[$queue_name])) {
     drupal_add_http_header('Status', '404 Not Found');
     print t("Could not validate the requested queue name.");
+    exit();
   }
   $queue_info = $queues_info[$queue_name];
 
@@ -137,12 +138,14 @@ function advancedqueue_fastcgi_process_item() {
   if (!$queue) {
     drupal_add_http_header('Status', '404 Not Found');
     print t("Unable to load the requested queue.");
+    exit();
   }
 
   $item = $queue->retrieveItem($_POST['item_id']);
   if (!$item) {
     drupal_add_http_header('Status', '404 Not Found');
     print t("Unable to process the requested queue item.");
+    exit();
   }
 
   $end = $_POST['end'];

@@ -51,9 +51,9 @@ class AdvancedQueue implements DrupalReliableQueueInterface {
       // Merge onto the existing item. This updates *all* properties, meaning
       // that if "created" is set into the future and an item is updated too
       // frequently, it might never get to run. Be careful!
-      $fields['key'] = $key;
+      $fields['item_key'] = $key;
       $query = db_merge('advancedqueue')
-        ->key(array('key' => $key))
+        ->key(array('item_key' => $key))
         ->fields($fields);
     }
     else {

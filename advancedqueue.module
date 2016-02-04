@@ -226,6 +226,10 @@ function advancedqueue_process_item($queue, $queue_name, $queue_info, $item, $en
     // above.
     $queue->deleteItem($item);
   }
+
+  // Clear Drupal's static caches (including entity controllers) so that
+  // subsequent queue items can have a relatively fresh start.
+  drupal_static_reset();
 }
 
 /**

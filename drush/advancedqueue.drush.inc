@@ -113,11 +113,11 @@ function drush_advancedqueue_process_queue($queue_args = NULL) {
  * Command callback for drush advancedqueue-list.
  */
 function drush_advancedqueue_list() {
-  $queues = drush_advancedqueue_get_queues();
-  $rows = array(array('Queue', 'Items', 'Class'));
-  foreach (array_keys($queues) as $name) {
+  $queues = advancedqueue_get_queues_info();
+  $rows = array(array('Queue', 'Items', 'Class', 'Group(s)'));
+  foreach ($queues as $name => $queue) {
     $q = DrupalQueue::get($name);
-    $rows[] = array($name, $q->numberOfItems(), get_class($q));
+    $rows[] = array($name, $q->numberOfItems(), get_class($q), implode(', ', $queue['groups']));
   }
 
   if (drush_get_option('pipe')) {
@@ -134,30 +134,4 @@ function drush_advancedqueue_list() {
 
   // Return the result for backend invoke
   return $rows;
-}
-
-/**
- * Get queues defined with hook_advanced_queue_info().
- *
- * @return
- *   Array of queues indexed by name and containing queue object and number
- *   of items.
- */
-function drush_advancedqueue_get_queues() {
-  $queues = &drupal_static(__FUNCTION__);
-  if (!isset($queues)) {
-    $advanced_queues = module_invoke_all('advanced_queue_info');
-    drupal_alter('advanced_queue_info', $advanced_queues);
-
-    $queues = array();
-    foreach($advanced_queues as $name => $queue) {
-      $queues[$name] = array(
-        'cron' => array(
-          'callback' => $queue['worker callback'],
-          'time' => $queue['time'],
-        )
-      );
-    }
-  }
-  return $queues;
 }
